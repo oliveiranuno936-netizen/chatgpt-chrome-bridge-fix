@@ -3,7 +3,7 @@
 一套用于修复「**ChatGPT 桌面版无法连接到 Chrome / Edge 浏览器扩展桥接**」的诊断与修复脚本。
 不改应用安装包、不改 `app.asar`、不需要管理员权限，全部操作可回滚。
 
-**当前版本**：v0.1.0（2026-09-15 首个版本，更新内容见 [CHANGELOG.md](CHANGELOG.md)）
+**当前版本**：v0.2.0（2026-09-15；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 适用前提：本机确实存在下面这个根因条件 —— ChatGPT 的 MSIX 包文件带 **EFS(Encrypted)** 属性，
 > 而本机**不具备加密文件的能力**（典型：Windows 家庭版不支持 EFS）。诊断脚本第 2 项会告诉你是否成立。
@@ -58,6 +58,7 @@
 | `diagnose-chatgpt-chrome-bridge.ps1` | **只读诊断**：5 项检查定位卡点，输出中文可读报告；退出码 `0`=未发现已知故障，`1`=检测到故障 | 仅在 `%TEMP%` 写 1 个临时文件做"复制包内文件"实测，用完即删 |
 | `fix-chatgpt-chrome-bridge.ps1` | **主修复**：截获应用自己写入的插件清单 → 装入运行市场目录 → 写入缓存标记文件 → 重启应用验证缓存命中（两组内部参数自动依次尝试）；退出码 `0`=修复成功，`1`=未命中 | 写 `~/.codex/.tmp/bundled-marketplaces/openai-bundled/` 下的 2 个文件；把 ChatGPT 重启 1~2 次 |
 | `repair-native-host.ps1` | **重建扩展桥接**：写 native messaging host 清单、Chrome/Edge 两个注册表项、桥接程序配置，并用插件自带的官方自检脚本复核（通过时输出 `correct=true`）；幂等 | 写 `%LOCALAPPDATA%\OpenAI\extension\` 与 `HKCU\Software\{Google\Chrome,Microsoft\Edge}\NativeMessagingHosts\` |
+| `check-chatgpt-connectivity.ps1`（入口）+ `chatgpt-check.mjs`（主体） | **网络侧自检**：4 项检查判断"打不开"是**隧道 / 出口节点**坏了还是 **Cloudflare 挑战**；退出码 `0`=链路正常，`1`=链路异常，`2`=参数错误 | 不修改任何东西（只发起网络探测） |
 | `docs/root-cause.md` | 根因记录：环境事实、失败链路、证据所在位置与取证方法、建议反馈给应用厂商的问题 | — |
 
 诊断脚本的 5 项检查：
@@ -69,6 +70,19 @@
 5. 插件市场刷新状态：缓存标记文件是否存在、运行清单收录了哪些插件、近 24 小时事件统计，
    以及**最后一次**刷新是"复用成功"还是"复制失败"
 
+连通性自检的 4 项检查（走本地代理，逐项实测而不是"ping 一下"）：
+
+1. 隧道本身：能否通过本地代理 `CONNECT` 到 `chatgpt.com:443` 并完成 TLS 握手（`--direct` 时改为直连 443）
+2. ChatGPT 依赖的 10 个域名逐个握手：`chatgpt.com`、`ab.chatgpt.com`、`cdn.oaistatic.com`、
+   `cdn.openai.com`、`files.oaiusercontent.com`、`ws.chatgpt.com`、`auth.openai.com`、
+   `api.openai.com`、`challenges.cloudflare.com`、`openai.com`
+3. 出口节点：读 `chatgpt.com/cdn-cgi/trace`，显示实际出口 IP、归属地与 Cloudflare 机房
+4. 真实页面加载 ×10（间隔 1.2 秒）：统计 `HTTP 200` / Cloudflare 挑战 / 硬失败各几次，
+   用来区分"隧道不稳"和"出口 IP 被重点标记"
+
+它的输出是**英文 ASCII**（Windows 控制台默认代码页 936 会把 Node 输出的 UTF-8 中文变成乱码，故刻意如此）。
+它回答的是"网络这条链路通不通"，**不涉及**本项目的 EFS 根因；两者配合使用可快速分清"网络问题"还是"应用问题"。
+
 ---
 
 ## 3. 使用方法
@@ -79,6 +93,8 @@
 - 已安装 **ChatGPT 桌面版**（Microsoft Store 的 MSIX 包 `OpenAI.Codex`），且**至少启动过一次**
   （脚本要从 `~/.codex/config.toml` 读取应用自己写入的版本号与运行时路径）
 - 修复脚本要求 ChatGPT 处于**运行状态**（它需要让应用触发一次刷新）
+- 连通性自检（3.9）需要 node：装了 Node.js（18+）就用系统的；没装则自动使用 ChatGPT 桌面版自带的
+  Node 运行时（前提是应用成功启动过一次）
 - 不需要管理员权限：只写当前用户的 `HKCU`、`%LOCALAPPDATA%`、`%USERPROFILE%\.codex`
 
 ### 3.2 第 1 步：先诊断
@@ -187,6 +203,63 @@ powershell -ExecutionPolicy Bypass -File .\fix-chatgpt-chrome-bridge.ps1
 | 脚本报 `未能截获应用的市场清单` | ChatGPT 没在运行，或它当前**没有**在刷新（即当前其实已经好了）。先跑诊断脚本第 5 项确认 |
 | 脚本报 `[3/3] ✘ 未命中复用分支` | 应用大版本更新改变了缓存标记的组成或清单过滤规则。先跑诊断脚本第 5 项看最后一次刷新结果 |
 | 修完还是连不上 | 跑诊断脚本：若第 3 项 `[FAIL]` → 用 `repair-native-host.ps1`；若第 4 项 `[FAIL]` → 在浏览器扩展页里启用 ChatGPT 扩展；若第 5 项最后一次是失败 → 回到第 3 步 |
+| 浏览器卡在「Just a moment…」/「请稍候…」、页面反复刷新 | 通常与桥接无关：跑 3.9 的连通性自检，若 `Cloudflare challenged` 偏高 → 换一个标记更少的节点 |
+
+### 3.9 网络侧自检（可选，用来分清「网络问题」还是「应用问题」）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\check-chatgpt-connectivity.ps1
+```
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `-ProxyPort 7890` | 代理端口不是默认的 `7892` 时指定 |
+| `-Proxy 127.0.0.1:7890` | 直接给 `host:port` |
+| `-Direct` | 不走代理、直连 `:443`：用来确认"是网络封了"还是"代理坏了" |
+| `-NodeExe <路径>` | 手动指定 `node.exe` |
+| `-ShowHelp` | 打印底层 `chatgpt-check.mjs` 的帮助（也可直接 `node chatgpt-check.mjs`） |
+
+输出示例（健康状态，脚本原样输出）：
+
+```
+=== ChatGPT connectivity self-check ===
+mode proxy 127.0.0.1:7892
+
+[1/4] local proxy
+  OK  127.0.0.1:7892                 reachable, TLS TLSv1.3
+
+[2/4] domains ChatGPT depends on
+  OK  chatgpt.com                    118ms  cn=chatgpt.com
+  OK  ab.chatgpt.com                 96ms  cn=*.chatgpt.com
+  ...
+
+[3/4] exit node
+  OK  egress ip                      203.0.113.7  loc=US  colo=LAX  warp=off
+
+[4/4] page load x10 (detects intermittent failures)
+  +  +  +  +  +  +  +  +  +  +
+
+  OK  real page (HTTP 200)           10/10
+  OK  cloudflare challenge           0/10
+  OK  hard failures                  0/10
+
+=== VERDICT ===
+Everything is healthy: proxy, all ChatGPT domains, exit node, and real page load.
+```
+
+怎么读结论：
+
+| 输出 | 含义 | 处理 |
+| --- | --- | --- |
+| `the local proxy is NOT usable` | 代理没起来，或它的节点挂了 | 重启加速器，等它显示"已连接"后重跑 |
+| `Tunnel is broken for: …` | 部分域名握手失败 | 换节点 / 换线路 |
+| `drops or resets requests intermittently` | 隧道不稳（偶发失败） | 换节点 / 换线路 |
+| `Cloudflare challenged N/10` 且 `N > 3` | 链路通，但出口 IP 被 Cloudflare 重点标记（机房 IP） | 换住宅 / 低标记节点 —— 这正是"浏览器卡在 请稍候…"的常见原因 |
+| `Everything is healthy` | 网络链路没问题 | 问题在应用侧：先跑第 1 步诊断，或按 3.6 重跑修复脚本 |
+
+退出码：`0` = 链路正常（偶发 Cloudflare 挑战视为正常），`1` = 链路异常，`2` = 参数写错。
 
 ---
 
@@ -200,6 +273,8 @@ chatgpt-chrome-bridge-fix/
 ├─ diagnose-chatgpt-chrome-bridge.ps1 只读诊断（5 项检查，退出码 0/1）
 ├─ fix-chatgpt-chrome-bridge.ps1      主修复（补齐清单与缓存标记并验证）
 ├─ repair-native-host.ps1             重建 native messaging host 桥接（幂等，含官方自检）
+├─ check-chatgpt-connectivity.ps1      网络侧自检入口（自动查找 node 并转发参数）
+├─ chatgpt-check.mjs                   网络侧自检主体（Node，无第三方依赖）
 └─ docs/
    └─ root-cause.md                   根因记录：环境事实、失败链路与取证方法
 ```
@@ -212,6 +287,8 @@ chatgpt-chrome-bridge-fix/
   （`26.908.4834.0` / 插件 `26.908.40834`）。应用大版本更新后可能失效 ——
   脚本会明确报"未命中复用分支"，而不是静默"假装修好"。
 - **修复脚本会重启 ChatGPT** 1~2 次（读取清单与验证都需要应用配合）。
+- **连通性自检依赖本地代理**：默认按 `127.0.0.1:7892` 探测（常见的混合端口），端口不同请用
+  `-ProxyPort` 指定；它只回答"链路通不通"，不判断账号状态、地区限制与浏览器扩展是否启用。
 - **不改应用本体**：不修改 `WindowsApps` 下的安装包、不修改 `app.asar`、不需要管理员权限。
 - 本项目是本地修复工具，与 OpenAI 无隶属关系；应用侧真正的修复建议见
   [docs/root-cause.md](docs/root-cause.md) 最后一节。
