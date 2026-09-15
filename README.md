@@ -3,6 +3,8 @@
 一套用于修复「**ChatGPT 桌面版无法连接到 Chrome / Edge 浏览器扩展桥接**」的诊断与修复脚本。
 不改应用安装包、不改 `app.asar`、不需要管理员权限，全部操作可回滚。
 
+**当前版本**：v0.1.0（2026-09-15 首个版本，更新内容见 [CHANGELOG.md](CHANGELOG.md)）
+
 > 适用前提：本机确实存在下面这个根因条件 —— ChatGPT 的 MSIX 包文件带 **EFS(Encrypted)** 属性，
 > 而本机**不具备加密文件的能力**（典型：Windows 家庭版不支持 EFS）。诊断脚本第 2 项会告诉你是否成立。
 
@@ -193,6 +195,7 @@ powershell -ExecutionPolicy Bypass -File .\fix-chatgpt-chrome-bridge.ps1
 ```
 chatgpt-chrome-bridge-fix/
 ├─ README.md                          本文件
+├─ CHANGELOG.md                       更新日志（版本记录）
 ├─ LICENSE                            MIT 许可证
 ├─ diagnose-chatgpt-chrome-bridge.ps1 只读诊断（5 项检查，退出码 0/1）
 ├─ fix-chatgpt-chrome-bridge.ps1      主修复（补齐清单与缓存标记并验证）
