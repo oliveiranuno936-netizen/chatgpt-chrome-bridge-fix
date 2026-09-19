@@ -152,6 +152,29 @@ if (Test-Path $mfPath) {
 if (Test-Path $keyPath) { Ok ".materialization-key 存在（$((Get-Item $keyPath).Length) 字节）" }
 else { Bad ".materialization-key 缺失（应用会去复制那份加密文件并失败）" }
 
+# 复用条件里还有一条：visualize 技能文件内容必须与包内一致（应用更新后插件内容会变）
+if ((Test-Path $mfPath) -and $srcRoot -and (Test-Path $srcRoot)) {
+    try {
+        $vis = (Get-Content $mfPath -Raw | ConvertFrom-Json).plugins | Where-Object { $_.name -eq 'visualize' } | Select-Object -First 1
+        if ($vis) {
+            $rel    = ($vis.source.path -replace '^\./', '') -replace '/', '\'
+            $srcVis = Join-Path (Join-Path $srcRoot $rel) 'skills\visualize\SKILL.md'
+            $dstVis = Join-Path (Join-Path $dstRoot $rel) 'skills\visualize\SKILL.md'
+            if ((Test-Path $srcVis) -and (Test-Path $dstVis)) {
+                if ((Get-FileHash $srcVis -Algorithm SHA256).Hash -eq (Get-FileHash $dstVis -Algorithm SHA256).Hash) {
+                    Ok 'visualize 技能内容与包内一致（复用条件之一）'
+                } else {
+                    Bad '运行目录里的插件内容已过期（visualize 技能与包内不一致）—— 复用条件不成立，请运行修复脚本'
+                }
+            } else {
+                Warn 'visualize 技能文件缺失，跳过内容一致性检查'
+            }
+        }
+    } catch {
+        Warn "内容一致性检查失败：$($_.Exception.Message)"
+    }
+}
+
 if ($logRoot -and (Test-Path $logRoot)) {
     $rows = @()
     $since = (Get-Date).ToUniversalTime().AddHours(-24)
