@@ -2,6 +2,53 @@
 
 本项目的版本记录，版本号与 GitHub 上的 tag / Release 一一对应。
 
+## v0.4.0 — 2026-09-26
+
+**新增两个自检脚本（其中一个是唯一能证明桥接可用的检查）**
+
+- `check-browser-bridge.mjs` + `check-browser-bridge.ps1` —— **端到端自检**：驱动应用自己的
+  `node_repl` 服务（与 agent 完全同一条路径：node_repl js 工具 → 浏览器服务 → 应用 browser-use 管道 →
+  扩展宿主 → Chrome），列出浏览器、标签页与 URL。静态检查全过而桥接已死很常见，只有它能给出结论。
+  退出码 `0` = 桥接可用，`1` = 不可用，`2` = 环境问题。
+- `check-bridge-health.ps1` —— **运行时健康自检**：实例唯一性（含"旧代"残留进程）、浏览器管道数量、
+  扩展宿主、Codex 沙箱服务 + Secondary Logon、静态配置与最近一次物化。退出码 `0` = 运行时健康。
+
+**本次真正卡住的根因：node_repl 的 Windows 沙箱依赖 Secondary Logon（seclogon）**
+
+- 现象：所有浏览器/电脑控制调用失败，报 `nodeRepl.fetch request failed` 或
+  `trusted Node process exited unexpectedly`；`node_repl` 的 stderr 是
+  `windows sandbox failed: CreateProcessWithLogonW failed: 1056`。
+- 原因：node_repl 用 `CreateProcessWithLogonW` 创建受限的 JS 执行进程，该 API 依赖
+  **Secondary Logon（seclogon）**；它没在跑时沙箱起不来，于是**每一次** js 调用都失败，
+  而所有静态检查（插件、清单、注册表、扩展）都正常。
+- 处置：`Start-Service seclogon`（普通权限即可）。`diagnose` 第 6 项与 `fix` 现在都会检查它。
+
+**另一条根因：复用条件一旦不成立，应用会把自己的浏览器插件卸载掉**
+
+- 市场解析失败（EFS 复制失败）时，应用会把"不在内置清单里"的插件**逐个卸载**：browser、chrome、
+  computer-use、unified-computer-use；随后 native host 清单、Chrome 注册表项、插件缓存目录
+  （`~/.codex/plugins/cache/openai-bundled/chrome`）以及 config.toml 里插件写入的
+  `[mcp_servers.node_repl]` 段（连带 `BROWSER_USE_CODEX_APP_VERSION`）都会消失。
+- 因此修复顺序必须是：**先让"复用"命中**（阻止卸载），改好的状态会被应用自己重建
+  （实测：重启后 startup reconcile 命中 `runtime_marketplace_reused`，插件与配置自动恢复）。
+- 附带修正：`fix` 读取应用版本号增加回退路径（config.toml → `.codex-global-state.json` 的
+  `appVersion`），因为插件被卸载后 config.toml 里的键会消失。
+
+**僵尸实例与死管道（本次靠重启解决）**
+
+- 同一台机器上会同时活着多个 ChatGPT 实例，每个实例占一条 `codex-browser-use` 管道；宿主按名字前缀
+  找管道时可能连到旧实例的死管道 → 列标签页卡 21 秒 → 应用因"无法确定当前网址"停止电脑操作。
+- 这类旧实例普通权限与提权都无法结束，**只能重启电脑**。实测：重启前 7 条管道 + 3 个僵尸实例；
+  重启后 2 条管道、单实例，桥接随即恢复。
+
+**实测证据（2026-09-26 16:10 前后）**
+
+- `check-browser-bridge.ps1`：`browsers=[{"id":"1","type":"extension","family":"chrome"}]`、
+  `tabs=[{id:"2059983772", title:"抖音开放平台 - 抖音小程序、字节小程序、头条小程序",
+  url:"https://developer.open-douyin.com/"}]`，退出码 `0`
+- `diagnose-chatgpt-chrome-bridge.ps1`：6 项全过，退出码 `0`
+- `check-bridge-health.ps1`：运行时健康，退出码 `0`
+
 ## v0.3.3 — 2026-09-26
 
 **新增：把"扩展宿主"这一环纳入诊断，并记录典型症状**

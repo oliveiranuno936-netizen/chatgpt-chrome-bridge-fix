@@ -236,6 +236,18 @@ if (-not $sandboxSvc) {
     Bad "服务未运行（$($sandboxSvc.Status)）：桌面电脑控制会报「窗口清单为空 / computer-use helper request failed」—— 运行 fix-chatgpt-chrome-bridge.ps1 会自动启动它"
 }
 
+# node_repl 的 Windows 沙箱用 CreateProcessWithLogonW 创建受限进程，依赖 Secondary Logon 服务。
+# 它没在跑时，所有 js / 浏览器 / 电脑控制调用都会失败（报 nodeRepl.fetch request failed 或
+# "trusted Node process exited unexpectedly"），而其它检查全都正常。
+$secSvc = Get-Service -Name 'seclogon' -ErrorAction SilentlyContinue
+if (-not $secSvc) {
+    Note '未找到 Secondary Logon（seclogon）服务'
+} elseif ($secSvc.Status -eq 'Running') {
+    Ok 'Secondary Logon（seclogon）正在运行 —— node_repl 沙箱登录的前提'
+} else {
+    Bad "Secondary Logon（seclogon）未运行（$($secSvc.Status)）：node_repl 会报 CreateProcessWithLogonW failed，浏览器与电脑控制调用会全部失败 —— Start-Service seclogon"
+}
+
 # ------------------------------------------------------------------- 结论
 Write-Host ""
 if ($script:problems.Count -eq 0) {

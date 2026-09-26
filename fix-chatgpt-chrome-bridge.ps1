@@ -67,10 +67,28 @@ foreach ($f in @($captureScript, $buildScript)) {
     if (-not (Test-Path $f)) { throw "缺少配套文件：$f（请从项目目录整体运行本脚本）" }
 }
 
-# packagedAppVersion = Electron app.getVersion()；应用自己把它写进了 config.toml
-$appVersion = (Select-String -Path (Join-Path $codexHome 'config.toml') -Pattern '^BROWSER_USE_CODEX_APP_VERSION\s*=\s*"([^"]+)"' |
-               Select-Object -First 1).Matches.Groups[1].Value
-if (-not $appVersion) { throw '无法从 config.toml 读取 BROWSER_USE_CODEX_APP_VERSION。' }
+# packagedAppVersion = Electron app.getVersion()（内部构建号，形如 26.924.20706）
+# 正常情况插件会把 BROWSER_USE_CODEX_APP_VERSION 写进 config.toml；
+# 但插件被卸载后该键会一起消失，此时回退读应用自己的全局状态文件（含 appVersion 字段）。
+$appVersion = $null
+$cfgPath = Join-Path $codexHome 'config.toml'
+if (Test-Path $cfgPath) {
+    $m = [regex]::Match((Get-Content $cfgPath -Raw -Encoding utf8), 'BROWSER_USE_CODEX_APP_VERSION\s*=\s*[''"]([^''"]+)[''"]')
+    if ($m.Success) { $appVersion = $m.Groups[1].Value }
+}
+if (-not $appVersion) {
+    $stateFile = Join-Path $codexHome '.codex-global-state.json'
+    if (Test-Path $stateFile) {
+        # 该文件里嵌套的 JSON 是转义过的（\"appVersion\":\"...\"），正则要容忍反斜杠
+        $m = [regex]::Match((Get-Content $stateFile -Raw -Encoding utf8), '\\?"appVersion\\?"\s*:\s*\\?"([^"\\]+)\\?"')
+        if ($m.Success) {
+            $appVersion = $m.Groups[1].Value
+            Write-Host "注意：config.toml 里没有 BROWSER_USE_CODEX_APP_VERSION（插件可能被卸载），" -ForegroundColor Yellow
+            Write-Host "      已从 .codex-global-state.json 回退读到版本号：$appVersion" -ForegroundColor Yellow
+        }
+    }
+}
+if (-not $appVersion) { throw '无法确定应用版本号：config.toml 无 BROWSER_USE_CODEX_APP_VERSION，全局状态文件里也没有 appVersion。' }
 
 Write-Host "包目录        : $($pkg.InstallLocation)"
 Write-Host "应用版本      : $appVersion"
@@ -98,6 +116,20 @@ if ($sandboxSvc -and $sandboxSvc.Status -ne 'Running') {
     }
 } elseif ($sandboxSvc) {
     Write-Host "沙箱服务      : 正在运行（$($sandboxSvc.Name)）"
+}
+
+# node_repl 的 Windows 沙箱用 CreateProcessWithLogonW 创建受限进程，依赖 Secondary Logon 服务。
+# 它没在跑时，js / 浏览器 / 电脑控制调用全部失败（nodeRepl.fetch request failed、
+# "trusted Node process exited unexpectedly"），而静态检查却都是正常的。
+$secSvc = Get-Service -Name 'seclogon' -ErrorAction SilentlyContinue
+if ($secSvc -and $secSvc.Status -ne 'Running') {
+    Write-Host "检测到 Secondary Logon（seclogon）未运行（$($secSvc.Status)），正在启动（node_repl 沙箱需要它）..." -ForegroundColor Yellow
+    try {
+        Start-Service -Name 'seclogon' -ErrorAction Stop
+        Write-Host "  ✔ 已启动：$((Get-Service -Name 'seclogon').Status)" -ForegroundColor Green
+    } catch {
+        Write-Host "  ✘ 启动失败：$($_.Exception.Message)（可在 services.msc 里启动 seclogon）" -ForegroundColor Yellow
+    }
 }
 
 Add-Type -Namespace BridgeFix -Name Win -MemberDefinition @'

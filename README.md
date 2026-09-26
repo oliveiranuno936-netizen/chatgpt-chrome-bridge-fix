@@ -3,7 +3,7 @@
 一套用于修复「**ChatGPT 桌面版无法连接到 Chrome / Edge 浏览器扩展桥接**」的诊断与修复脚本。
 不改应用安装包、不改 `app.asar`、不需要管理员权限，全部操作可回滚。
 
-**当前版本**：v0.3.3（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
+**当前版本**：v0.4.0（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 适用前提：本机确实存在下面这个根因条件 —— ChatGPT 的 MSIX 包文件带 **EFS(Encrypted)** 属性，
 > 而本机**不具备加密文件的能力**（典型：Windows 家庭版不支持 EFS）。诊断脚本第 2 项会告诉你是否成立。
@@ -59,6 +59,8 @@
 | `fix-chatgpt-chrome-bridge.ps1`（配套 `capture-manifest.mjs`、`build-marketplace.mjs`） | **主修复**：截获应用自己写出的插件清单 → 用**「读出字节再写入」**的方式把包内插件市场同步到运行目录（应用自己的复制因 EFS 必然失败）→ 复刻缓存标记 → 换入并重启验证命中；换入前先自检三项复用条件；并确保电脑控制辅助服务（`CodexSandboxService`）在运行；退出码 `0`=修复成功，`1`=未命中 | 重建 `~/.codex/.tmp/bundled-marketplaces/openai-bundled/`（含插件文件，约 85 MB）；把 ChatGPT 重启 1~4 次 |
 | `repair-native-host.ps1` | **重建扩展桥接**：写 native messaging host 清单、Chrome/Edge 两个注册表项、桥接程序配置，并用插件自带的官方自检脚本复核（通过时输出 `correct=true`）；幂等 | 写 `%LOCALAPPDATA%\OpenAI\extension\` 与 `HKCU\Software\{Google\Chrome,Microsoft\Edge}\NativeMessagingHosts\` |
 | `check-chatgpt-connectivity.ps1`（入口）+ `chatgpt-check.mjs`（主体） | **网络侧自检**：4 项检查判断"打不开"是**隧道 / 出口节点**坏了还是 **Cloudflare 挑战**；退出码 `0`=链路正常，`1`=链路异常，`2`=参数错误 | 不修改任何东西（只发起网络探测） |
+| `check-browser-bridge.ps1`（入口）+ `check-browser-bridge.mjs`（主体） | **端到端自检**：驱动应用自己的 `node_repl` 走完整链路（js → 浏览器服务 → browser-use 管道 → 扩展宿主 → Chrome），列出浏览器/标签页/URL。**这是唯一能证明桥接真正可用的检查**；退出码 `0`=可用，`1`=不可用，`2`=环境问题 | 不修改任何东西（只读 + 一次 js 调用） |
+| `check-bridge-health.ps1` | **运行时健康自检**：实例唯一性（含旧代残留进程）、浏览器管道、扩展宿主、Codex 沙箱服务 + Secondary Logon、静态配置与最近物化；退出码 `0`=运行时健康 | 不修改任何东西 |
 | `docs/root-cause.md` | 根因记录：环境事实、失败链路、证据所在位置与取证方法、建议反馈给应用厂商的问题 | — |
 
 诊断脚本的 6 项检查：
@@ -218,6 +220,8 @@ powershell -ExecutionPolicy Bypass -File .\fix-chatgpt-chrome-bridge.ps1
 | 修完还是连不上 | 跑诊断脚本：若第 3 项 `[FAIL]` → 用 `repair-native-host.ps1`；若第 4 项 `[FAIL]` → 在浏览器扩展页里启用 ChatGPT 扩展；若第 5 项最后一次是失败 → 回到第 3 步 |
 | 诊断第 5 项报「插件内容已过期」 | 应用更新后运行目录里的插件还是旧版本 → 直接回到第 3 步，修复脚本会同步到当前版本 |
 | 窗口清单能看到 Chrome，但**读不到网址**、报 `nodeRepl.fetch request failed` | 扩展的后台/原生端口休眠或陈旧（诊断第 4 项会列出 `extension-host.exe` 的启动时间）→ 在 Chrome 的 `chrome://extensions` 里把 ChatGPT 扩展**「重新加载」**，然后**新开对话**重试；必要时完全退出 Chrome 再打开 |
+| 报 `nodeRepl.fetch request failed` / `trusted Node process exited unexpectedly`，而静态检查全过 | node_repl 的 Windows 沙箱登录失败。先跑 `check-browser-bridge.ps1` 确认，再 `Start-Service seclogon` 与 `Start-Service CodexSandboxService.OpenAI.Codex`（普通权限即可），然后新开对话重试 |
+| 出现多个 ChatGPT 实例 / `codex-browser-use` 管道很多 | 旧实例各占一条死管道，宿主按名前缀找管道时可能连错目标 → **重启电脑**（这类旧进程普通权限与提权都结束不掉） |
 | 诊断第 3 项报 native host 清单 / Chrome 注册表项缺失 | 应用更新或安装流程可能把桥接清掉 → 跑 `repair-native-host.ps1`（官方自检通过会输出 `correct=true`），再复检 |
 | 诊断第 6 项报「服务未运行」/ 窗口清单为空 / `helper request failed` / `nodeRepl.fetch request failed` | 电脑控制辅助服务被应用更新搞挂了 → 跑第 3 步（修复脚本会自动启动它），或手动：`Start-Service CodexSandboxService.OpenAI.Codex`（也可在 services.msc 里启动） |
 | 修复脚本报「无法结束 ChatGPT 进程（Access is denied）」 | 应用是提权启动的（子进程同样提权）。脚本不会中断，会改用焦点触发 reconcile；更干净的做法是在任务管理器里结束全部 ChatGPT 进程后重开，再跑第 3 步 |
@@ -281,6 +285,41 @@ Everything is healthy: proxy, all ChatGPT domains, exit node, and real page load
 
 ---
 
+## 端到端自检（唯一能证明桥接可用的检查）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\check-browser-bridge.ps1
+```
+
+它驱动**应用自己的 `node_repl` 服务**，走的是 agent 完全相同的链路：
+
+```
+node_repl js 工具 → 浏览器服务 → 应用 browser-use 管道 → 扩展宿主 → Chrome
+```
+
+输出示例（2026-09-26 实测，Chrome 里开着抖音开放平台）：
+
+```
+node_repl   : ...\runtimes\cua_node\<hash>\bin\node_repl.exe
+browser cli : ...\plugins\cache\openai-bundled\browser\<版本>\scripts\browser-client.mjs
+browsers    : [{"id":"1","type":"extension","family":"chrome"}]
+tabs (1):
+  - [2059983772] 抖音开放平台 - 抖音小程序、字节小程序、头条小程序  https://developer.open-douyin.com/
+
+VERDICT: bridge works - the app can enumerate Chrome tabs and read their URLs.
+```
+
+退出码：`0` = 桥接可用；`1` = 桥接不可用；`2` = 环境/配置问题（如 config.toml 里没有
+`[mcp_servers.node_repl]`，说明插件状态没恢复 → 先跑主修复）。
+
+**为什么需要它**：静态检查（诊断 6 项）全过、而实时链路已死的情况很常见——诊断只能证明
+"文件和配置是对的"，本脚本才能证明"应用真的能看到 Chrome 标签页和网址"。
+
+配套的 `check-bridge-health.ps1` 则看运行时环境（实例是否唯一、管道是否干净、扩展宿主、
+`CodexSandboxService` 与 `Secondary Logon` 是否在跑）。两个脚本都是只读的。
+
+---
+
 ## 目录结构
 
 ```
@@ -295,6 +334,9 @@ chatgpt-chrome-bridge-fix/
 ├─ repair-native-host.ps1             重建 native messaging host 桥接（幂等，含官方自检）
 ├─ check-chatgpt-connectivity.ps1      网络侧自检入口（自动查找 node 并转发参数）
 ├─ chatgpt-check.mjs                   网络侧自检主体（Node，无第三方依赖）
+├─ check-browser-bridge.ps1            端到端自检入口（唯一能证明桥接可用的检查）
+├─ check-browser-bridge.mjs            端到端自检主体（驱动应用的 node_repl 列出 Chrome 标签页）
+├─ check-bridge-health.ps1             运行时健康自检（实例/管道/宿主/服务/静态配置）
 └─ docs/
    └─ root-cause.md                   根因记录：环境事实、失败链路与取证方法
 ```
@@ -303,8 +345,7 @@ chatgpt-chrome-bridge-fix/
 
 - **不是万能修复**：只针对上面那条 EFS 根因。网络/代理、账号登录、扩展被浏览器策略禁用、
   插件缓存缺失等其它原因导致的"连不上"，本项目不做处理（诊断脚本会把它们分别标出来）。
-- **依赖应用内部实现**：缓存标记的组成、复用校验条件、插件清单的过滤规则与日志事件名都取自当前应用版本
-  （已验证到 `26.924.1866.0` / 插件 `26.924.20706`）。应用大版本更新后可能失效 ——
+- **依赖应用内部实现**：缓存标记的组成、复用校验条件、插件清单的过滤规则与日志事件名都取自当前应用版本  （已验证到 `26.924.1866.0` / 插件 `26.924.20706`）。应用大版本更新后可能失效 ——
   脚本会明确报"未命中复用分支"，而不是静默"假装修好"。已经适配过两次机制变化：
   v0.3.0 补上了新出现的展示开关字段与"技能文件内容必须与包内一致"的要求，
   v0.3.1 跟进新构建**删掉 `computerUseSkillVariant` 字段**的改动。
@@ -316,6 +357,13 @@ chatgpt-chrome-bridge-fix/
   应用更新后旧目录被替换，服务可能意外终止（退出码 `1067`）。修复脚本会把它启动起来，
   但"崩溃后自动重启"需要在管理员权限下配置（`sc failure`）—— 普通用户权限会被拒绝。
 - **修复脚本会重启 ChatGPT** 1~4 次（读取清单与逐组参数验证都需要应用配合）。
+- **复用条件一旦不成立，应用会卸载自己的浏览器插件**：市场解析失败时，应用会把 browser、chrome、
+  computer-use、unified-computer-use 逐个卸载，并清掉 native host 清单、Chrome 注册表项、插件缓存目录
+  以及 config.toml 里插件写入的 `[mcp_servers.node_repl]` 段。所以修复必须"先让复用命中"，
+  只补清单与标记是不够的；修好后应用会自己把插件与配置重建回来（实测重启后自动恢复）。
+- **node_repl 的 Windows 沙箱依赖 `Secondary Logon`（seclogon）**：它没在跑时，每一次 js /
+  浏览器 / 电脑控制调用都会失败（`nodeRepl.fetch request failed`、`trusted Node process exited
+  unexpectedly`、`CreateProcessWithLogonW failed`），而静态检查全都正常。启动它不需要管理员权限。
 - **连通性自检依赖本地代理**：默认按 `127.0.0.1:7892` 探测（常见的混合端口），端口不同请用
   `-ProxyPort` 指定；它只回答"链路通不通"，不判断账号状态、地区限制与浏览器扩展是否启用。
 - **不改应用本体**：不修改 `WindowsApps` 下的安装包、不修改 `app.asar`、不需要管理员权限。
