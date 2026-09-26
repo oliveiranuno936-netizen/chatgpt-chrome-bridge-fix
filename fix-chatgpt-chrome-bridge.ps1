@@ -91,7 +91,9 @@ Add-Type -Namespace BridgeFix -Name Win -MemberDefinition @'
 
 function Invoke-FocusChatGpt {
     $chat = Get-Process ChatGPT -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $chat) { throw 'ChatGPT 未在运行：本修复需要它处于运行状态以触发 reconcile。' }
+    # 应用在运行但窗口句柄为 0（窗口已关闭 / 最小化到托盘）时无法用焦点触发，
+    # 交给后面的重启路径（kill + 启动 = 必然触发一次 startup reconcile）。
+    if (-not $chat) { return $false }
     $other = Get-Process chrome,msedge,explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
     [void][BridgeFix.Win]::ShowWindow($chat.MainWindowHandle, 6)     # 最小化
     Start-Sleep -Milliseconds 800
@@ -103,11 +105,26 @@ function Invoke-FocusChatGpt {
     [void][BridgeFix.Win]::ShowWindow($chat.MainWindowHandle, 9)     # 还原 -> 重新获得焦点
     Start-Sleep -Milliseconds 400
     [void][BridgeFix.Win]::SetForegroundWindow($chat.MainWindowHandle)
+    return $true
 }
 
 function Stop-ChatGpt {
-    Get-Process ChatGPT -ErrorAction SilentlyContinue | Stop-Process -Force
-    for ($i = 0; $i -lt 20 -and (Get-Process ChatGPT -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+    foreach ($p in @(Get-Process ChatGPT -ErrorAction SilentlyContinue)) {
+        try {
+            $p.Kill()
+            [void]$p.WaitForExit(3000)
+        } catch {
+            # 个别进程权限更高（结束会被拒绝）：不要因此中断整个修复
+            Write-Host "      警告：无法结束 ChatGPT 进程 $($p.Id)（$($_.Exception.Message)）" -ForegroundColor Yellow
+        }
+    }
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Get-Process ChatGPT -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (Get-Process ChatGPT -ErrorAction SilentlyContinue) {
+        Write-Host "      注意：仍有 ChatGPT 进程存活，将尝试直接启动新实例来触发 reconcile。" -ForegroundColor Yellow
+    }
 }
 
 function Start-ChatGpt {
@@ -171,23 +188,36 @@ function Stop-CaptureWatcher {
     if ($script:proc -and -not $script:proc.HasExited) { $script:proc.Kill() }
 }
 
-Remove-Item $captureFile -Force -ErrorAction SilentlyContinue
-Start-CaptureWatcher                       # 必须先布好监听，应用的 startup reconcile 很早
-for ($i = 0; $i -lt 3 -and -not (Test-Path $captureFile); $i++) { Invoke-FocusChatGpt; Start-Sleep -Seconds 3 }
-if (-not (Test-Path $captureFile)) {
-    Write-Host "      触发不到重新物化，重启 ChatGPT 以强制一次 startup reconcile（监听器保持运行）..."
-    Stop-ChatGpt
-    Start-Sleep -Seconds 3
-    Start-ChatGpt
-    for ($i = 0; $i -lt 30 -and -not (Test-Path $captureFile); $i++) { Start-Sleep -Seconds 3 }
+# 截获一次；返回清单文本，失败返回 $null
+# （应用会先创建文件、再写内容，读取必须校验内容有效，否则会截获到 0 字节的空文件）
+function Get-ManifestCapture {
+    Remove-Item $captureFile -Force -ErrorAction SilentlyContinue
+    Start-CaptureWatcher                       # 必须先布好监听，应用的 startup reconcile 很早
+    for ($i = 0; $i -lt 3 -and -not (Test-Path $captureFile); $i++) { [void](Invoke-FocusChatGpt); Start-Sleep -Seconds 3 }
+    if (-not (Test-Path $captureFile)) {
+        Write-Host "      触发不到重新物化，重启 ChatGPT 以强制一次 startup reconcile（监听器保持运行）..."
+        Stop-ChatGpt
+        Start-Sleep -Seconds 3
+        Start-ChatGpt
+        for ($i = 0; $i -lt 30 -and -not (Test-Path $captureFile); $i++) { Start-Sleep -Seconds 3 }
+    }
+    Stop-CaptureWatcher
+    if (-not (Test-Path $captureFile)) { return $null }
+    $text = [System.IO.File]::ReadAllText($captureFile, [Text.Encoding]::UTF8)
+    if ($text.Trim().Length -eq 0 -or $text -notmatch '"plugins"') { return $null }
+    return $text
 }
-Stop-CaptureWatcher
-if (-not (Test-Path $captureFile)) { throw "未能截获应用的市场清单。" }
-$capturedText = [System.IO.File]::ReadAllText($captureFile, [Text.Encoding]::UTF8)
-Write-Host ("      已截获：" + $capturedText.Length + " 字符")
+
+$capturedText = $null
+for ($try = 1; $try -le 3 -and -not $capturedText; $try++) {
+    if ($try -gt 1) { Write-Host "      上次截获到的清单无效（空文件或不是清单），重试第 $try 次..." -ForegroundColor Yellow }
+    $capturedText = Get-ManifestCapture
+}
+if (-not $capturedText) { throw "未能截获有效的市场清单（应用可能没有在刷新，先跑诊断脚本第 5 项确认）。" }
+Write-Host ("      已截获：" + (Get-Item $captureFile).Length + " 字节")
 
 # ------------------------------------------------- 2~4) 重建运行目录并验证命中
-# 候选参数：Windows 上 computerUseSkillVariant 恒为 null；visualize 变体与音频开关按应用默认值优先
+# 候选参数：visualize 变体与音频开关按应用默认值优先（音频开关 = 有 computer-use 插件 && 两个音频环境变量）
 $candidates = @(
     @{ lv = 'live-disabled'; audio = '0' },
     @{ lv = 'live-enabled';  audio = '0' },
@@ -202,7 +232,7 @@ foreach ($c in $candidates) {
 
     Write-Host "`n[2/4] 用读+写重建运行市场目录（lv=$($c.lv), audio=$($c.audio)）..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & $node $buildScript $srcRoot $captureFile $stagingDir $appVersion 'null' $c.lv $c.audio > $buildReport
+    & $node $buildScript $srcRoot $captureFile $stagingDir $appVersion $c.lv $c.audio > $buildReport
     $buildExit = $LASTEXITCODE
     $sw.Stop()
     $report = Get-Content $buildReport -Raw | ConvertFrom-Json
@@ -218,7 +248,7 @@ foreach ($c in $candidates) {
     }
     Write-Host "      ✔ 自检通过：key / 清单 / visualize 技能内容 / 插件根 全部与应用的期望一致"
 
-    Write-Host "[3/4] 关闭 ChatGPT → 换入新目录 → 重新启动（触发 startup reconcile）..."
+    Write-Host "[3/4] 换入新目录，并让应用立刻做一次 reconcile..."
     Stop-ChatGpt
     try {
         if (Test-Path $dstRoot) { Remove-Item $dstRoot -Recurse -Force }
@@ -229,24 +259,26 @@ foreach ($c in $candidates) {
     $t0 = (Get-Date).ToUniversalTime()
     Start-ChatGpt
 
-    Write-Host "[4/4] 等待应用日志确认是否命中「复用」..."
+    # 结束不掉应用时（进程权限更高），靠焦点触发它的 reconcile —— 效果与 startup reconcile 等价
+    Write-Host "[4/4] 等待应用日志确认是否命中「复用」（最多 60 秒，期间用焦点触发 reconcile）..."
     $ev = @()
     for ($i = 0; $i -lt 20; $i++) {
         Start-Sleep -Seconds 3
         $ev += Get-BridgeEvents $t0 0
         if ($ev -contains 'runtime_marketplace_reused') { break }
-        if ($ev -contains 'marketplace_folder_write_failed') { break }
+        if ($i % 2 -eq 1) { [void](Invoke-FocusChatGpt) }
     }
     $ev = $ev | Sort-Object -Unique
     Write-Host ("      事件：" + ($ev -join ', '))
-    if ($ev -contains 'runtime_marketplace_reused') { $done = $true; $usedLv = $c.lv; break }
+    if ($ev -contains 'runtime_marketplace_reused') { $done = $true; $usedLv = "$($c.lv) / audio=$($c.audio)"; break }
 }
 
 Write-Host ""
 if ($done) {
-    Write-Host "[4/4] ✔ 修复成功（visualize variant = $usedLv）：应用已复用现有插件市场，不再尝试那次注定失败的复制。" -ForegroundColor Green
+    Write-Host "[4/4] ✔ 修复成功（$usedLv）：应用已复用现有插件市场，不再尝试那次注定失败的复制。" -ForegroundColor Green
     Write-Host "      运行市场目录内容已同步到当前应用版本（$appVersion），应用会把新插件装进插件缓存。" -ForegroundColor Green
     Write-Host "      现在回到 ChatGPT 里新开一个对话，再让它操作 Chrome（例如「用 Chrome 打开推特」）。" -ForegroundColor Green
+    Write-Host "      若诊断脚本第 3 项仍报 native host 缺失，再运行 repair-native-host.ps1 重建桥接。"
     Write-Host "      如需撤销：删除 `"$dstRoot\.materialization-key`" 即可恢复原状。"
     Write-Host "      注意：ChatGPT 每次版本更新后 key 与插件内容都会失配、故障复发，重新运行本脚本即可。"
 } else {

@@ -12,8 +12,8 @@
 // It mirrors what the app does (module `BundledPluginsMarketplace`):
 //   1. write the app's own filtered manifest to <staging>/.agents/plugins/marketplace.json
 //   2. copy every plugin listed there from the package into <staging>
-//   3. apply the variant post-processing (visualize: bundledContentVariant, and drop skills/live
-//      when the live variant is disabled)
+//   3. apply the variant post-processing (visualize: bundledContentVariant + drop skills/live when
+//      the live variant is disabled; computer-use: audio variant when the audio flags are on)
 //   4. write .materialization-key with exactly the app's field order
 //   5. self-check the three conditions the app compares before it reuses a runtime marketplace,
 //      and exit 1 unless all of them hold (so we never swap in a tree that cannot be reused)
@@ -22,16 +22,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const [srcRoot, capturedPath, stagingDir, appVersion, cuArg, lvArg, audioArg] = process.argv.slice(2);
+const [srcRoot, capturedPath, stagingDir, appVersion, lvArg, audioArg] = process.argv.slice(2);
 
 if (!srcRoot || !capturedPath || !stagingDir || !appVersion) {
   console.error(
-    'usage: node build-marketplace.mjs <srcRoot> <capturedManifest> <stagingDir> <appVersion> <cuVariant|null> <lvVariant|null> <audio:0|1>',
+    'usage: node build-marketplace.mjs <srcRoot> <capturedManifest> <stagingDir> <appVersion> <lvVariant|null> <audio:0|1>',
   );
   process.exit(2);
 }
 
-const cu = cuArg === 'null' || cuArg === undefined ? null : cuArg;
 const lv = lvArg === 'null' || lvArg === undefined ? null : lvArg;
 const audio = audioArg === '1';
 const VISUALIZE = 'visualize';
@@ -57,7 +56,18 @@ function copyTree(from, to) {
 }
 
 const manifestText = fs.readFileSync(capturedPath, 'utf8');
-const manifest = JSON.parse(manifestText);
+let manifest;
+try {
+  manifest = JSON.parse(manifestText);
+} catch (e) {
+  console.error(`captured manifest is not valid JSON (${manifestText.length} chars): ${e.message}`);
+  console.error('the capture raced with the app writing the staging manifest - re-run the fix script.');
+  process.exit(2);
+}
+if (!Array.isArray(manifest.plugins) || manifest.plugins.length === 0) {
+  console.error(`captured manifest has no plugins (${manifestText.length} chars)`);
+  process.exit(2);
+}
 
 rmrf(stagingDir);
 fs.mkdirSync(path.join(stagingDir, '.agents', 'plugins'), { recursive: true });
@@ -78,12 +88,20 @@ for (const entry of manifest.plugins) {
   const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf8'));
   plugins.push({ name: pluginJson.name, version: pluginJson.version });
 
-  // Same post-processing the app applies right after copying a plugin.
+  // Same post-processing the app applies right after copying a plugin:
+  //   computer-use -> 'audio' variant when audio is on (and the SKILL.md description prefix)
+  //   visualize    -> the live variant; 'live-disabled' also drops skills/live
   let variant;
-  if (pluginJson.name === 'computer-use') variant = cu;
+  if (pluginJson.name === 'computer-use' && audio) variant = 'audio';
   else if (pluginJson.name === VISUALIZE) variant = lv;
   if (variant == null) continue;
   if (pluginJson.name === VISUALIZE && lv === 'live-disabled') rmrf(path.join(to, 'skills', 'live'));
+  if (pluginJson.name === 'computer-use' && audio) {
+    const skill = path.join(to, 'skills', 'computer-use', 'SKILL.md');
+    if (fs.existsSync(skill)) {
+      fs.writeFileSync(skill, fs.readFileSync(skill, 'utf8').replace(/^(description: )(["']?)/m, '$1$2Record computer audio. '));
+    }
+  }
   fs.writeFileSync(
     pluginJsonPath,
     `${JSON.stringify({ ...pluginJson, bundledContentVariant: variant }, null, 2)}\n`,
@@ -109,13 +127,16 @@ const srcVisualizeText = srcVisualizeSkill && fs.existsSync(srcVisualizeSkill)
   : undefined;
 
 // Field order matters: the app compares the file against JSON.stringify(...) of its own object.
+// NOTE: this list is version specific. Current app build (26.924.x) dropped computerUseSkillVariant
+// and defines computerUseAudioEnabled as "has computer-use && audio env flags"; older builds had
+// computerUseSkillVariant between marketplaceName and computerUseAudioEnabled. Re-derive from the
+// bundle if a future update stops hitting the reuse branch.
 const key = JSON.stringify({
   version: 1,
   appVersion,
   bundleId,
   marketplaceName: MARKETPLACE_NAME,
-  computerUseSkillVariant: cu,
-  computerUseAudioEnabled: cu !== 'legacy-mcp' && plugins.some((p) => p.name === 'computer-use') && audio,
+  computerUseAudioEnabled: plugins.some((p) => p.name === 'computer-use') && audio,
   liveVisualizationSkillVariant: lv,
   visualizeTreatment: false,
   ...(srcVisualizeText === undefined ? {} : { visualizeSkillContentHash: sha256(srcVisualizeText) }),
@@ -163,7 +184,6 @@ console.log(
       checks,
       staging: stagingDir,
       appVersion,
-      computerUseSkillVariant: cu,
       liveVisualizationSkillVariant: lv,
       computerUseAudioEnabled: audio,
       pluginCount: plugins.length,

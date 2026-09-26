@@ -25,13 +25,21 @@ function attempt() {
   for (const name of entries) {
     if (!/^openai-bundled\.staging-/.test(name)) continue;
     const manifest = path.join(parent, name, '.agents', 'plugins', 'marketplace.json');
-    let fd;
+    let buf;
     try {
-      fd = fs.openSync(manifest, 'r');
+      buf = fs.readFileSync(manifest, 'utf8');
     } catch {
       continue;
     }
-    const buf = fs.readFileSync(fd, 'utf8');
+    // The app creates the file first and writes its content a moment later, so an empty or
+    // half-written read is normal: keep waiting instead of capturing nothing.
+    if (!buf || !buf.trim()) continue;
+    try {
+      const parsed = JSON.parse(buf);
+      if (!Array.isArray(parsed.plugins) || parsed.plugins.length === 0) continue;
+    } catch {
+      continue;
+    }
     fs.writeFileSync(out, buf, 'utf8');
     console.log(`captured ${buf.length} bytes from ${name}`);
     return true;
