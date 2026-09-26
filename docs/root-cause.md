@@ -71,6 +71,23 @@
 另外，**应用更新还可能把扩展桥接一并清掉**（native host 清单文件与 Chrome 注册表项消失），
 这时即使插件市场修好了也连不上；诊断脚本第 3 项会报出来，用 `repair-native-host.ps1` 重建即可。
 
+## 另一条独立的失败链：电脑控制辅助服务随更新失效
+
+桌面的「电脑控制」并不是走上面那条插件市场路径，它还需要一个本机服务来拉起辅助进程：
+`CodexSandboxService.OpenAI.Codex`。这个服务的可执行文件**位于带版本号的 MSIX 包目录里**
+（`...\WindowsApps\OpenAI.Codex_<版本>_x64__<hash>\app\resources\codex-windows-sandbox-service.exe`），
+因此应用更新替换包目录后，正在运行或待启动的服务就会失败：
+实测状态为 `Stopped`、退出码 `1067`（进程意外终止），而且 `StartMode` 虽是 `Auto` 也不会自己回来。
+
+表现与插件问题完全不同：**浏览器桥接与插件市场都正常**，但让它操作浏览器时
+「窗口清单为空」，读取浏览器状态报 `computer-use helper request failed`
+（在对话里可能显示为 `nodeRepl.fetch request failed`）。
+
+处理：`Start-Service CodexSandboxService.OpenAI.Codex` —— 普通用户权限即可（服务 ACL 允许启动）。
+诊断脚本第 6 项会报出该服务未运行，修复脚本每次运行都会确保它处于运行状态。
+需要注意的是，这种失效**每次应用更新后都可能复现**，而"崩溃自动重启"需要在管理员权限下配置
+（`sc failure`），普通权限会被拒绝。
+
 ## 证据在哪里（操作性信息）
 
 | 内容 | 位置 |

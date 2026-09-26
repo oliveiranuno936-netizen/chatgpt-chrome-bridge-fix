@@ -84,6 +84,22 @@ if ((Test-Path $pkgAppDir) -and -not (((Get-Item $pkgAppDir -Force).Attributes) 
     Write-Host "      建议先运行 diagnose-chatgpt-chrome-bridge.ps1 确认卡点。" -ForegroundColor Yellow
 }
 
+# 电脑控制依赖 Codex 沙箱服务：应用更新会让旧版本目录失效，该服务可能已意外终止（退出码 1067），
+# 症状是「窗口清单为空 / computer-use helper request failed / nodeRepl.fetch request failed」。
+$sandboxSvc = Get-Service -Name 'CodexSandboxService*' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($sandboxSvc -and $sandboxSvc.Status -ne 'Running') {
+    Write-Host "检测到 $($sandboxSvc.Name) 未运行（$($sandboxSvc.Status)），正在启动（桌面电脑控制需要它）..." -ForegroundColor Yellow
+    try {
+        Start-Service -Name $sandboxSvc.Name -ErrorAction Stop
+        Write-Host "  ✔ 已启动：$((Get-Service -Name $sandboxSvc.Name).Status)" -ForegroundColor Green
+    } catch {
+        Write-Host "  ✘ 启动失败：$($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "     可手动启动：services.msc 里找到 $($sandboxSvc.Name)，或重启电脑后再试。"
+    }
+} elseif ($sandboxSvc) {
+    Write-Host "沙箱服务      : 正在运行（$($sandboxSvc.Name)）"
+}
+
 Add-Type -Namespace BridgeFix -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h);

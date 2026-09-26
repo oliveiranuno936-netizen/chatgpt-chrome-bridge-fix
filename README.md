@@ -3,7 +3,7 @@
 一套用于修复「**ChatGPT 桌面版无法连接到 Chrome / Edge 浏览器扩展桥接**」的诊断与修复脚本。
 不改应用安装包、不改 `app.asar`、不需要管理员权限，全部操作可回滚。
 
-**当前版本**：v0.3.1（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
+**当前版本**：v0.3.2（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 适用前提：本机确实存在下面这个根因条件 —— ChatGPT 的 MSIX 包文件带 **EFS(Encrypted)** 属性，
 > 而本机**不具备加密文件的能力**（典型：Windows 家庭版不支持 EFS）。诊断脚本第 2 项会告诉你是否成立。
@@ -55,13 +55,13 @@
 
 | 文件 | 作用 | 会修改什么 |
 | --- | --- | --- |
-| `diagnose-chatgpt-chrome-bridge.ps1` | **只读诊断**：5 项检查定位卡点，输出中文可读报告；退出码 `0`=未发现已知故障，`1`=检测到故障 | 仅在 `%TEMP%` 写 1 个临时文件做"复制包内文件"实测，用完即删 |
-| `fix-chatgpt-chrome-bridge.ps1`（配套 `capture-manifest.mjs`、`build-marketplace.mjs`） | **主修复**：截获应用自己写出的插件清单 → 用**「读出字节再写入」**的方式把包内插件市场同步到运行目录（应用自己的复制因 EFS 必然失败）→ 复刻缓存标记 → 换入并重启验证命中；换入前先自检三项复用条件；退出码 `0`=修复成功，`1`=未命中 | 重建 `~/.codex/.tmp/bundled-marketplaces/openai-bundled/`（含插件文件，约 85 MB）；把 ChatGPT 重启 1~4 次 |
+| `diagnose-chatgpt-chrome-bridge.ps1` | **只读诊断**：6 项检查定位卡点，输出中文可读报告；退出码 `0`=未发现已知故障，`1`=检测到故障 | 仅在 `%TEMP%` 写 1 个临时文件做"复制包内文件"实测，用完即删 |
+| `fix-chatgpt-chrome-bridge.ps1`（配套 `capture-manifest.mjs`、`build-marketplace.mjs`） | **主修复**：截获应用自己写出的插件清单 → 用**「读出字节再写入」**的方式把包内插件市场同步到运行目录（应用自己的复制因 EFS 必然失败）→ 复刻缓存标记 → 换入并重启验证命中；换入前先自检三项复用条件；并确保电脑控制辅助服务（`CodexSandboxService`）在运行；退出码 `0`=修复成功，`1`=未命中 | 重建 `~/.codex/.tmp/bundled-marketplaces/openai-bundled/`（含插件文件，约 85 MB）；把 ChatGPT 重启 1~4 次 |
 | `repair-native-host.ps1` | **重建扩展桥接**：写 native messaging host 清单、Chrome/Edge 两个注册表项、桥接程序配置，并用插件自带的官方自检脚本复核（通过时输出 `correct=true`）；幂等 | 写 `%LOCALAPPDATA%\OpenAI\extension\` 与 `HKCU\Software\{Google\Chrome,Microsoft\Edge}\NativeMessagingHosts\` |
 | `check-chatgpt-connectivity.ps1`（入口）+ `chatgpt-check.mjs`（主体） | **网络侧自检**：4 项检查判断"打不开"是**隧道 / 出口节点**坏了还是 **Cloudflare 挑战**；退出码 `0`=链路正常，`1`=链路异常，`2`=参数错误 | 不修改任何东西（只发起网络探测） |
 | `docs/root-cause.md` | 根因记录：环境事实、失败链路、证据所在位置与取证方法、建议反馈给应用厂商的问题 | — |
 
-诊断脚本的 5 项检查：
+诊断脚本的 6 项检查：
 
 1. ChatGPT 桌面版 MSIX 包是否安装、版本与包目录
 2. 包内 `app` 目录是否带 EFS 属性，并**实测**复制包内文件是否失败
@@ -70,6 +70,9 @@
 5. 插件市场刷新状态：缓存标记文件是否存在、运行清单收录了哪些插件、**运行目录里的插件内容是否与包内一致**
    （应用更新后内容会过期，这也是复用条件之一）、近 24 小时事件统计，
    以及**最后一次**刷新是"复用成功"还是"复制失败"
+6. 电脑控制辅助服务（`CodexSandboxService`）是否在运行 —— 它是桌面电脑控制用来拉起辅助进程的；
+   应用更新后该服务可能意外终止（退出码 `1067`），症状是**窗口清单为空**、
+   `computer-use helper request failed`、`nodeRepl.fetch request failed`
 
 连通性自检的 4 项检查（走本地代理，逐项实测而不是"ping 一下"）：
 
@@ -215,6 +218,7 @@ powershell -ExecutionPolicy Bypass -File .\fix-chatgpt-chrome-bridge.ps1
 | 修完还是连不上 | 跑诊断脚本：若第 3 项 `[FAIL]` → 用 `repair-native-host.ps1`；若第 4 项 `[FAIL]` → 在浏览器扩展页里启用 ChatGPT 扩展；若第 5 项最后一次是失败 → 回到第 3 步 |
 | 诊断第 5 项报「插件内容已过期」 | 应用更新后运行目录里的插件还是旧版本 → 直接回到第 3 步，修复脚本会同步到当前版本 |
 | 诊断第 3 项报 native host 清单 / Chrome 注册表项缺失 | 应用更新或安装流程可能把桥接清掉 → 跑 `repair-native-host.ps1`（官方自检通过会输出 `correct=true`），再复检 |
+| 诊断第 6 项报「服务未运行」/ 窗口清单为空 / `helper request failed` / `nodeRepl.fetch request failed` | 电脑控制辅助服务被应用更新搞挂了 → 跑第 3 步（修复脚本会自动启动它），或手动：`Start-Service CodexSandboxService.OpenAI.Codex`（也可在 services.msc 里启动） |
 | 修复脚本报「无法结束 ChatGPT 进程（Access is denied）」 | 应用是提权启动的（子进程同样提权）。脚本不会中断，会改用焦点触发 reconcile；更干净的做法是在任务管理器里结束全部 ChatGPT 进程后重开，再跑第 3 步 |
 | 浏览器卡在「Just a moment…」/「请稍候…」、页面反复刷新 | 通常与桥接无关：跑 3.9 的连通性自检，若 `Cloudflare challenged` 偏高 → 换一个标记更少的节点 |
 
@@ -283,7 +287,7 @@ chatgpt-chrome-bridge-fix/
 ├─ README.md                          本文件
 ├─ CHANGELOG.md                       更新日志（版本记录）
 ├─ LICENSE                            MIT 许可证
-├─ diagnose-chatgpt-chrome-bridge.ps1 只读诊断（5 项检查，退出码 0/1）
+├─ diagnose-chatgpt-chrome-bridge.ps1 只读诊断（6 项检查，退出码 0/1）
 ├─ fix-chatgpt-chrome-bridge.ps1      主修复（读+写同步插件市场并复刻缓存标记）
 ├─ capture-manifest.mjs               截获应用过滤后的市场清单（主修复调用）
 ├─ build-marketplace.mjs              读+写重建运行市场目录并复刻缓存标记（主修复调用）
@@ -307,6 +311,9 @@ chatgpt-chrome-bridge-fix/
   跑 `repair-native-host.ps1` 重建即可（这一步与插件市场是两件独立的事）。
 - **修复会重建运行市场目录**（约 85 MB，位于 `~/.codex/.tmp/bundled-marketplaces/`）：
   它是用「读+写」把包内插件复制出来的，因此会占磁盘；删掉该目录或其中的缓存标记即可回滚。
+- **电脑控制辅助服务需要单独留意**：`CodexSandboxService` 的可执行文件位于带版本号的 MSIX 包目录里，
+  应用更新后旧目录被替换，服务可能意外终止（退出码 `1067`）。修复脚本会把它启动起来，
+  但"崩溃后自动重启"需要在管理员权限下配置（`sc failure`）—— 普通用户权限会被拒绝。
 - **修复脚本会重启 ChatGPT** 1~4 次（读取清单与逐组参数验证都需要应用配合）。
 - **连通性自检依赖本地代理**：默认按 `127.0.0.1:7892` 探测（常见的混合端口），端口不同请用
   `-ProxyPort` 指定；它只回答"链路通不通"，不判断账号状态、地区限制与浏览器扩展是否启用。

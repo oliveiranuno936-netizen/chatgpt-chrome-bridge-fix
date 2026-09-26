@@ -4,14 +4,16 @@
     只读诊断：查清 ChatGPT/Codex 桌面版「无法连接到 Chrome / Edge 浏览器扩展桥接」
     到底卡在哪一环，以及本机的修复是否仍然有效。
 
-    它检查 5 件事：
+    它检查 6 件事：
       1. ChatGPT 桌面版 MSIX 包是否安装、装在哪个版本目录
       2. 包内文件是否带 EFS(Encrypted) 属性，并实测「复制包内文件」是否失败
          （只在 %TEMP% 下写一个临时文件，用完即删）
       3. 浏览器扩展桥接的本机 native messaging host：清单文件 + 注册表项
       4. Chrome / Edge 里 ChatGPT 扩展是否已安装并启用（调用插件自带的官方检查脚本）
-      5. 插件市场「物化」状态：.materialization-key 是否存在，日志里最后一次是
-         复用成功（runtime_marketplace_reused）还是复制失败（marketplace_folder_write_failed）
+      5. 插件市场「物化」状态：.materialization-key 是否存在、运行目录内容是否与包内一致，
+         日志里最后一次是复用成功（runtime_marketplace_reused）还是复制失败（marketplace_folder_write_failed）
+      6. 电脑控制辅助服务（Codex 沙箱服务）是否在运行 —— 应用更新后它可能意外终止，
+         表现为「窗口清单为空」「computer-use helper request failed」
 
     全程不修改应用、插件市场、注册表和系统设置。
     退出码：0 = 未发现已知故障；1 = 检测到故障（详见输出）
@@ -35,7 +37,7 @@ $codexHome = Join-Path $env:USERPROFILE '.codex'
 $dstRoot   = Join-Path $codexHome '.tmp\bundled-marketplaces\openai-bundled'
 
 # ----------------------------------------------------------------- 1) 应用包
-Sect '1/5 ChatGPT 桌面版安装情况'
+Sect '1/6 ChatGPT 桌面版安装情况'
 $pkg = Get-AppxPackage OpenAI.Codex -ErrorAction SilentlyContinue
 if (-not $pkg) {
     Bad '未检测到 OpenAI.Codex（ChatGPT 桌面版 MSIX 包），后续检查无意义'
@@ -48,7 +50,7 @@ $srcRoot = if ($appDir) { Join-Path $appDir 'resources\plugins\openai-bundled' }
 $logRoot = if ($pkg) { Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Local\Codex\Logs" } else { $null }
 
 # ------------------------------------------------- 2) EFS 加密属性 + 复制实测
-Sect '2/5 EFS 加密属性与「复制包内文件」实测'
+Sect '2/6 EFS 加密属性与「复制包内文件」实测'
 if ($srcRoot -and (Test-Path $srcRoot)) {
     $appAttr = (Get-Item $appDir -Force).Attributes
     $dirEncrypted = $appAttr -match 'Encrypted'
@@ -83,7 +85,7 @@ if ($srcRoot -and (Test-Path $srcRoot)) {
 }
 
 # ------------------------------------------------------- 3) native messaging host
-Sect '3/5 浏览器扩展桥接（native messaging host）'
+Sect '3/6 浏览器扩展桥接（native messaging host）'
 $hostName    = 'com.openai.codexextension'
 $manifestPath = Join-Path $env:LOCALAPPDATA "OpenAI\extension\$hostName.json"
 if (Test-Path $manifestPath) {
@@ -110,7 +112,7 @@ foreach ($b in @(
 }
 
 # ------------------------------------------------------- 4) 浏览器扩展是否启用
-Sect '4/5 Chrome / Edge 里的 ChatGPT 扩展'
+Sect '4/6 Chrome / Edge 里的 ChatGPT 扩展'
 $node = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\runtimes\cua_node') -Recurse -Filter node.exe -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty FullName
 $checker = Get-ChildItem (Join-Path $codexHome 'plugins\cache\openai-bundled\chrome') -Recurse -Filter 'check-extension-installed.js' -ErrorAction SilentlyContinue |
@@ -138,7 +140,7 @@ if (-not $checker) {
 }
 
 # ------------------------------------------------------- 5) 插件市场物化状态
-Sect '5/5 插件市场「物化」状态'
+Sect '5/6 插件市场「物化」状态'
 $keyPath = Join-Path $dstRoot '.materialization-key'
 $mfPath  = Join-Path $dstRoot '.agents\plugins\marketplace.json'
 if (Test-Path $mfPath) {
@@ -206,6 +208,17 @@ if ($logRoot -and (Test-Path $logRoot)) {
     }
 } else {
     Warn "找不到应用日志目录：$logRoot"
+}
+
+# ------------------------------------------- 6) 电脑控制辅助服务（Codex 沙箱服务）
+Sect '6/6 电脑控制辅助服务（Codex 沙箱服务）'
+$sandboxSvc = Get-Service -Name 'CodexSandboxService*' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $sandboxSvc) {
+    Note '未找到 Codex 沙箱服务（本机可能没启用桌面电脑控制，不影响浏览器桥接）'
+} elseif ($sandboxSvc.Status -eq 'Running') {
+    Ok "服务正在运行：$($sandboxSvc.Name)"
+} else {
+    Bad "服务未运行（$($sandboxSvc.Status)）：桌面电脑控制会报「窗口清单为空 / computer-use helper request failed」—— 运行 fix-chatgpt-chrome-bridge.ps1 会自动启动它"
 }
 
 # ------------------------------------------------------------------- 结论

@@ -2,6 +2,34 @@
 
 本项目的版本记录，版本号与 GitHub 上的 tag / Release 一一对应。
 
+## v0.3.2 — 2026-09-26
+
+**新增失效模式：应用更新会让电脑控制辅助服务意外终止**
+
+- 症状（来自用户侧）：让它操作 Chrome 时**窗口清单为空**，读取浏览器状态返回
+  `nodeRepl.fetch request failed`（应用侧的真实文案是 `computer-use helper request failed`），
+  于是整个电脑控制不可用 —— 但此时**浏览器桥接与插件市场其实都是好的**（诊断 1~5 项全过）。
+- 根因：`CodexSandboxService.OpenAI.Codex` 处于 **Stopped，退出码 `1067`**（进程意外终止）。
+  该服务的可执行文件位于带版本号的 MSIX 包目录
+  （`...\WindowsApps\OpenAI.Codex_<版本>_x64__<hash>\app\resources\codex-windows-sandbox-service.exe`），
+  应用更新替换包目录后旧路径失效，服务就再没起来。桌面电脑控制拉起辅助进程要靠它，
+  所以表现为「窗口清单为空 / helper request failed」。
+- 修复：`Start-Service CodexSandboxService.OpenAI.Codex`（**不需要管理员权限**，服务 ACL 允许当前用户启动）。
+  本机实测：启动后状态稳定 Running，辅助进程正常。
+
+**变更**
+
+- `diagnose-chatgpt-chrome-bridge.ps1`：新增第 6 项检查「电脑控制辅助服务是否在运行」，
+  未运行判为 `[FAIL]`（诊断现在共 6 项）
+- `fix-chatgpt-chrome-bridge.ps1`：每次运行都会检查并**自动启动**该服务，启动失败时给出
+  `services.msc` 的手动操作提示
+- README：诊断检查清单、FAQ、已知限制同步更新
+
+**已知限制**
+
+- 「服务崩溃后自动重启」需要在管理员权限下配置（`sc failure ... actions= restart/5000`），
+  普通用户权限会返回 `Access is denied`；本版本只做"发现未运行就启动"。
+
 ## v0.3.1 — 2026-09-26
 
 **适配应用 `26.924.1866.0`（内部版本 `26.924.20706`）+ 修掉上一版暴露的四个问题**
