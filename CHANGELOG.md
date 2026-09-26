@@ -2,6 +2,21 @@
 
 本项目的版本记录，版本号与 GitHub 上的 tag / Release 一一对应。
 
+## v0.3.3 — 2026-09-26
+
+**新增：把"扩展宿主"这一环纳入诊断，并记录典型症状**
+
+- 症状：桌面电脑控制的**窗口清单能看到 Chrome（标题正确）**，但读取页面时被应用拦下
+  （"could not determine the current browser URL ... enough confidence to enforce policy"），
+  浏览器调用报 `nodeRepl.fetch request failed`（实测每次卡 21 秒后失败）。
+- 机制：应用此时**已经认出**一个 Chrome 扩展浏览器（`backend=chrome browserID=n`），
+  但请求"列出标签页"会超时 → 拿不到当前网址 → 安全策略要求必须知道网址，于是主动停止电脑操作。
+  根因是扩展的**后台服务/原生消息端口处于休眠或陈旧**状态（典型 MV3 行为）。
+- 处置：在 Chrome 的 `chrome://extensions` 里把 ChatGPT 扩展**「重新加载」**（唤醒后台、重建原生端口），
+  然后**新开一个对话**重试；必要时完全退出 Chrome 再打开。
+- `diagnose-chatgpt-chrome-bridge.ps1`：第 4 项现在会报告 `extension-host.exe` 的数量与最近启动时间，
+  并直接给出上述"重新加载扩展"的处置提示。
+
 ## v0.3.2 — 2026-09-26
 
 **新增失效模式：应用更新会让电脑控制辅助服务意外终止**

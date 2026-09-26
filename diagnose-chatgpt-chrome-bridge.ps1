@@ -139,6 +139,21 @@ if (-not $checker) {
     }
 }
 
+# 扩展宿主进程：Chrome 只有在扩展调用 native messaging 时才会拉起它。
+# 它存在 = 扩展与本机 host 连过；但它可能带着旧连接（例如沙箱服务挂掉期间建立的），
+# 症状是「窗口清单能看到 Chrome，但读不到网址 / 报 nodeRepl.fetch request failed」。
+$extHosts = @(Get-Process extension-host -ErrorAction SilentlyContinue)
+if ($extHosts.Count -eq 0) {
+    Note '当前没有 extension-host.exe 进程（扩展尚未连接；浏览器任务发起时 Chrome 会拉起它）'
+} else {
+    $newestHost = $extHosts | Sort-Object StartTime -Descending | Select-Object -First 1
+    Note ("extension-host.exe：$($extHosts.Count) 个，最近一个启动于 " +
+          "$($newestHost.StartTime.ToString('yyyy-MM-dd HH:mm:ss'))")
+    Write-Host "  [ -- ] 若「浏览器任务读不到网址 / 报 nodeRepl.fetch request failed」：先在 Chrome 的" -NoNewline
+    Write-Host " chrome://extensions " -NoNewline
+    Write-Host "里把 ChatGPT 扩展「重新加载」（唤醒休眠的扩展后台、重建原生端口），再新开对话重试"
+}
+
 # ------------------------------------------------------- 5) 插件市场物化状态
 Sect '5/6 插件市场「物化」状态'
 $keyPath = Join-Path $dstRoot '.materialization-key'

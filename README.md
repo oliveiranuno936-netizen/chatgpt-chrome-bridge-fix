@@ -3,7 +3,7 @@
 一套用于修复「**ChatGPT 桌面版无法连接到 Chrome / Edge 浏览器扩展桥接**」的诊断与修复脚本。
 不改应用安装包、不改 `app.asar`、不需要管理员权限，全部操作可回滚。
 
-**当前版本**：v0.3.2（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
+**当前版本**：v0.3.3（2026-09-26；更新内容见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 适用前提：本机确实存在下面这个根因条件 —— ChatGPT 的 MSIX 包文件带 **EFS(Encrypted)** 属性，
 > 而本机**不具备加密文件的能力**（典型：Windows 家庭版不支持 EFS）。诊断脚本第 2 项会告诉你是否成立。
@@ -217,6 +217,7 @@ powershell -ExecutionPolicy Bypass -File .\fix-chatgpt-chrome-bridge.ps1
 | 脚本报 `[3/3] ✘ 未命中复用分支` | 应用大版本更新改变了缓存标记的组成或清单过滤规则。先跑诊断脚本第 5 项看最后一次刷新结果 |
 | 修完还是连不上 | 跑诊断脚本：若第 3 项 `[FAIL]` → 用 `repair-native-host.ps1`；若第 4 项 `[FAIL]` → 在浏览器扩展页里启用 ChatGPT 扩展；若第 5 项最后一次是失败 → 回到第 3 步 |
 | 诊断第 5 项报「插件内容已过期」 | 应用更新后运行目录里的插件还是旧版本 → 直接回到第 3 步，修复脚本会同步到当前版本 |
+| 窗口清单能看到 Chrome，但**读不到网址**、报 `nodeRepl.fetch request failed` | 扩展的后台/原生端口休眠或陈旧（诊断第 4 项会列出 `extension-host.exe` 的启动时间）→ 在 Chrome 的 `chrome://extensions` 里把 ChatGPT 扩展**「重新加载」**，然后**新开对话**重试；必要时完全退出 Chrome 再打开 |
 | 诊断第 3 项报 native host 清单 / Chrome 注册表项缺失 | 应用更新或安装流程可能把桥接清掉 → 跑 `repair-native-host.ps1`（官方自检通过会输出 `correct=true`），再复检 |
 | 诊断第 6 项报「服务未运行」/ 窗口清单为空 / `helper request failed` / `nodeRepl.fetch request failed` | 电脑控制辅助服务被应用更新搞挂了 → 跑第 3 步（修复脚本会自动启动它），或手动：`Start-Service CodexSandboxService.OpenAI.Codex`（也可在 services.msc 里启动） |
 | 修复脚本报「无法结束 ChatGPT 进程（Access is denied）」 | 应用是提权启动的（子进程同样提权）。脚本不会中断，会改用焦点触发 reconcile；更干净的做法是在任务管理器里结束全部 ChatGPT 进程后重开，再跑第 3 步 |
